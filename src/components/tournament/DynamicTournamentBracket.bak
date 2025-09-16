@@ -1,0 +1,279 @@
+// src/components/tournament/DynamicTournamentBracket.jsx
+
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft, RotateCcw, Share2, Users, Award } from 'lucide-react';
+import TournamentMatchCard from './TournamentMatchCard';
+import TournamentBracketConnector from './TournamentBracketConnector';
+
+function nextPowerOfTwo(n) {
+  if (n < 1) return 1;
+  return Math.pow(2, Math.ceil(Math.log2(n)));
+}
+
+export default function DynamicTournamentBracket({ tournament, onBack, onReset }) {
+  const [bracketStructure, setBracketStructure] = useState([]);
+  const [champion, setChampion] = useState(null);
+  const containerRef = useRef(null);
+  const [isMounted, setIsMounted] = useState(false);
+
+  const initializeBracket = useCallback(() => {
+    const inputPlayers = Array.isArray(tournament.players) ? tournament.players.slice() : [];
+    // Determine slots (power of two) — use tournament.totalPlayers if it's sane, otherwise compute
+    let slots = tournament && Number.isInteger(tournament.totalPlayers) && tournament.totalPlayers >= inputPlayers.length
+      ? nextPowerOfTwo(tournament.totalPlayers)
+      : nextPowerOfTwo(inputPlayers.length);
+
+    // Ensure slots at least fit players
+    if (slots < inputPlayers.length) slots = nextPowerOfTwo(inputPlayers.length);
+
+    // Pad players with BYE to reach slots
+    const players = inputPlayers.slice();
+    while (players.length < slots) players.push('BYE');
+
+    const rounds = Math.log2(slots); // integer now
+    const bracket = [];
+
+    // First round: pair players
+    const firstRound = [];
+    for (let i = 0; i < slots; i += 2) {
+      const p1 = players[i] ?? 'BYE';
+      const p2 = players[i + 1] ?? 'BYE';
+
+      // auto-winner if opponent is BYE
+      let winner = null;
+      if (p1 !== 'BYE' && p2 === 'BYE') winner = { name: p1, seed: i + 1 };
+      else if (p2 !== 'BYE' && p1 === 'BYE') winner = { name: p2, seed: i + 2 };
+
+      firstRound.push({
+        player1: p1,
+        player2: p2,
+        seed1: i + 1,
+        seed2: i + 2,
+        winner: winner
+      });
+    }
+    bracket.push(firstRound);
+
+    // Subsequent rounds placeholders
+    let currentMatches = firstRound.length;
+    for (let r = 1; r < rounds; r++) {
+      currentMatches = currentMatches / 2;
+      const roundMatches = [];
+      for (let m = 0; m < currentMatches; m++) {
+        roundMatches.push({
+          player1: 'TBD',
+          player2: 'TBD',
+          seed1: null,
+          seed2: null,
+          winner: null
+        });
+      }
+      bracket.push(roundMatches);
+    }
+
+    // Auto-advance BYE winners from first round into second round
+    if (bracket.length > 1) {
+      for (let i = 0; i < firstRound.length; i++) {
+        const match = firstRound[i];
+        if (match.winner) {
+          const nextMatchIndex = Math.floor(i / 2);
+          const isTop = i % 2 === 0;
+          if (isTop) {
+            bracket[1][nextMatchIndex].player1 = match.winner.name;
+            bracket[1][nextMatchIndex].seed1 = match.winner.seed;
+          } else {
+            bracket[1][nextMatchIndex].player2 = match.winner.name;
+            bracket[1][nextMatchIndex].seed2 = match.winner.seed;
+          }
+        }
+      }
+    }
+
+    // If second round matches now have BYE vs player (rare after padding) auto-advance them too
+    // (This handles small edge-cases)
+    for (let r = 1; r < bracket.length; r++) {
+      for (let mi = 0; mi < bracket[r].length; mi++) {
+        const m = bracket[r][mi];
+        if (!m.winner) {
+          if (m.player1 !== 'TBD' && m.player2 === 'BYE') m.winner = { name: m.player1, seed: m.seed1 ?? null };
+          else if (m.player2 !== 'TBD' && m.player1 === 'BYE') m.winner = { name: m.player2, seed: m.seed2 ?? null };
+          // if winner set, also propagate to next round (if exists)
+          if (m.winner && r + 1 < bracket.length) {
+            const nextIdx = Math.floor(mi / 2);
+            const isTopSlot = mi % 2 === 0;
+            if (isTopSlot) {
+              bracket[r + 1][nextIdx].player1 = m.winner.name;
+              bracket[r + 1][nextIdx].seed1 = m.winner.seed;
+            } else {
+              bracket[r + 1][nextIdx].player2 = m.winner.name;
+              bracket[r + 1][nextIdx].seed2 = m.winner.seed;
+            }
+          }
+        }
+      }
+    }
+
+    setBracketStructure(bracket);
+    // if final already decided by auto-advances
+    const lastRound = bracket[bracket.length - 1];
+    if (lastRound.length === 1 && lastRound[0].winner) setChampion(lastRound[0].winner);
+    else setChampion(null);
+  }, [tournament]);
+
+  useEffect(() => {
+    initializeBracket();
+    setIsMounted(false);
+    const t = setTimeout(() => setIsMounted(true), 200);
+    return () => clearTimeout(t);
+  }, [initializeBracket]);
+
+  const handlePlayerClick = (roundIndex, matchIndex, playerSeed, playerName) => {
+    const match = bracketStructure[roundIndex][matchIndex];
+    // don't allow choosing if opponent not set or any side is TBD/BYE
+    if (!match) return;
+    if (!playerName || playerName === 'TBD' || playerName === 'BYE') return;
+    if (match.player1 === 'TBD' || match.player2 === 'TBD') return;
+
+    const newBracket = JSON.parse(JSON.stringify(bracketStructure));
+    const curMatch = newBracket[roundIndex][matchIndex];
+    const newWinner = { name: playerName, seed: playerSeed ?? null };
+    curMatch.winner = newWinner;
+
+    // propagate to next round (or set champion)
+    if (roundIndex < newBracket.length - 1) {
+      const nextRound = roundIndex + 1;
+      const nextMatchIndex = Math.floor(matchIndex / 2);
+      const isTopSlot = matchIndex % 2 === 0;
+      if (isTopSlot) {
+        newBracket[nextRound][nextMatchIndex].player1 = newWinner.name;
+        newBracket[nextRound][nextMatchIndex].seed1 = newWinner.seed;
+      } else {
+        newBracket[nextRound][nextMatchIndex].player2 = newWinner.name;
+        newBracket[nextRound][nextMatchIndex].seed2 = newWinner.seed;
+      }
+
+      // Clear any downstream winners & players that depended on previous value
+      for (let r = nextRound; r < newBracket.length; r++) {
+        const startMatch = r === nextRound ? nextMatchIndex : 0;
+        if (r === nextRound) {
+          // clear only the specific match winner and the downstream slot it feeds
+          newBracket[r][startMatch].winner = null;
+          if (r + 1 < newBracket.length) {
+            const nextIdx = Math.floor(startMatch / 2);
+            if (startMatch % 2 === 0) {
+              newBracket[r + 1][nextIdx].player1 = 'TBD';
+              newBracket[r + 1][nextIdx].seed1 = null;
+            } else {
+              newBracket[r + 1][nextIdx].player2 = 'TBD';
+              newBracket[r + 1][nextIdx].seed2 = null;
+            }
+          }
+        } else {
+          // clear whole round beyond
+          newBracket[r].forEach(m => {
+            m.player1 = 'TBD';
+            m.player2 = 'TBD';
+            m.seed1 = null;
+            m.seed2 = null;
+            m.winner = null;
+          });
+        }
+      }
+
+      setChampion(null);
+    } else {
+      // final round chosen
+      setChampion(newWinner);
+    }
+
+    setBracketStructure(newBracket);
+  };
+
+  const getRoundName = (roundIndex, totalRounds) => {
+    if (roundIndex === totalRounds - 1) return 'Final';
+    if (roundIndex === totalRounds - 2) return 'Semi Finals';
+    if (roundIndex === totalRounds - 3) return 'Quarter Finals';
+    return `Round ${roundIndex + 1}`;
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800">
+      <header className="border-b border-gray-700/50 bg-gray-800/30 backdrop-blur-sm sticky top-0 z-50">
+        <div className="container mx-auto px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <Button variant="outline" size="icon" onClick={onBack} className="border-gray-600 hover:bg-gray-700">
+              <ArrowLeft className="w-4 h-4" />
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-white">{tournament.name}</h1>
+              <div className="flex items-center gap-4 text-sm text-gray-400 mt-1">
+                <span>{tournament.category}</span>
+                <span className="flex items-center gap-1">
+                  <Users className="w-4 h-4" /> {tournament.actualParticipants} Participants
+                </span>
+                <span className="text-blue-400">{nextPowerOfTwo((tournament.totalPlayers ?? tournament.players.length) || 1)}-slot bracket</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={onReset} className="border-gray-600 hover:bg-gray-700">
+              <RotateCcw className="w-4 h-4 mr-2" /> Reset
+            </Button>
+            <Button variant="outline" size="sm" className="border-gray-600 hover:bg-gray-700">
+              <Share2 className="w-4 h-4 mr-2" /> Share
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {champion && (
+        <div className="bg-gradient-to-r from-yellow-900/30 to-orange-900/30 border-b border-yellow-500/40">
+          <div className="container mx-auto px-6 py-6 flex items-center justify-center gap-6">
+            <Award className="w-12 h-12 text-yellow-400 animate-pulse" />
+            <div className="text-center">
+              <h2 className="text-3xl font-bold text-yellow-400 mb-1">TOURNAMENT CHAMPION!</h2>
+              <p className="text-2xl text-white font-bold">{champion.name}</p>
+            </div>
+            <Award className="w-12 h-12 text-yellow-400 animate-pulse" />
+          </div>
+        </div>
+      )}
+
+      <main className="py-12 overflow-x-auto">
+        <div className="min-w-fit px-8">
+          <div ref={containerRef} className="relative flex gap-16 items-start">
+            {bracketStructure.map((round, roundIndex) => (
+              <div key={roundIndex} className="space-y-4">
+                <h3 className="text-lg font-bold text-center text-gray-200 mb-6">
+                  {getRoundName(roundIndex, bracketStructure.length)}
+                </h3>
+
+                <div className="flex flex-col gap-y-8">
+                  {round.map((match, matchIndex) => (
+                    <div key={matchIndex} data-round={roundIndex} data-match={matchIndex}>
+                      <TournamentMatchCard
+                        {...match}
+                        roundIndex={roundIndex}
+                        matchIndex={matchIndex}
+                        onPlayerClick={handlePlayerClick}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            {isMounted && (
+              <TournamentBracketConnector
+                bracketStructure={bracketStructure}
+                containerRef={containerRef}
+              />
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}

@@ -1,0 +1,102 @@
+// src/components/tournament/TournamentBracketConnector.jsx
+
+import React, { useState, useLayoutEffect } from 'react';
+
+export default function TournamentBracketConnector({ bracketStructure, containerRef, totalPlayers }) {
+    const [connections, setConnections] = useState([]);
+
+    useLayoutEffect(() => {
+        if (!containerRef.current || !bracketStructure.length || !bracketStructure[0]) return;
+
+        const calculateConnections = () => {
+            const newConnections = [];
+            const containerRect = containerRef.current.getBoundingClientRect();
+            
+            for (let roundIndex = 0; roundIndex < bracketStructure.length - 1; roundIndex++) {
+                const currentRound = bracketStructure[roundIndex];
+                const nextRound = bracketStructure[roundIndex + 1];
+                
+                for (let matchIndex = 0; matchIndex < currentRound.length; matchIndex++) {
+                    const nextMatchIndex = Math.floor(matchIndex / 2);
+
+                    const matchEl = containerRef.current.querySelector(`[data-round="${roundIndex}"][data-match="${matchIndex}"]`);
+                    const nextMatchEl = containerRef.current.querySelector(`[data-round="${roundIndex + 1}"][data-match="${nextMatchIndex}"]`);
+
+                    if (matchEl && nextMatchEl) {
+                        const mRect = matchEl.getBoundingClientRect();
+                        const nextRect = nextMatchEl.getBoundingClientRect();
+
+                        const isLeftSide = mRect.left < containerRect.left + containerRect.width / 2;
+
+                        const p1 = { 
+                            x: (isLeftSide ? mRect.right : mRect.left) - containerRect.left, 
+                            y: mRect.top + mRect.height / 2 - containerRect.top 
+                        };
+                        const pNext = { 
+                            x: (isLeftSide ? nextRect.left : nextRect.right) - containerRect.left, 
+                            y: nextRect.top + nextRect.height / 2 - containerRect.top 
+                        };
+                        
+                        const midX = p1.x + (isLeftSide ? 40 : -40);
+
+                        const pathData = `M ${p1.x},${p1.y} C ${midX},${p1.y} ${midX},${pNext.y} ${pNext.x},${pNext.y}`;
+
+                        newConnections.push({
+                            id: `conn-${roundIndex}-${matchIndex}`,
+                            path: pathData,
+                            delay: roundIndex * 150 + matchIndex * 50
+                        });
+                    }
+                }
+            }
+            setConnections(newConnections);
+        };
+        
+        calculateConnections();
+        
+        const handleResize = () => setTimeout(calculateConnections, 100);
+        window.addEventListener('resize', handleResize);
+        
+        return () => window.removeEventListener('resize', handleResize);
+        
+    }, [bracketStructure, containerRef, totalPlayers]);
+
+    return (
+        <svg 
+            className="absolute inset-0 pointer-events-none w-full h-full"
+            style={{ zIndex: -1 }}
+        >
+            <defs>
+                <linearGradient id="bracketConnectionGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#3b82f6" />
+                    <stop offset="100%" stopColor="#8b5cf6" />
+                </linearGradient>
+            </defs>
+            <g>
+                {connections.map((conn) => (
+                    <path
+                        key={conn.id}
+                        d={conn.path}
+                        stroke="url(#bracketConnectionGradient)"
+                        strokeWidth="2"
+                        fill="none"
+                        strokeLinecap="round"
+                        className="transition-all duration-700 ease-out"
+                        style={{
+                            strokeDasharray: 500,
+                            strokeDashoffset: 500,
+                            animation: `draw-line 0.5s ease-out forwards ${conn.delay}ms`
+                        }}
+                    />
+                ))}
+            </g>
+            <style>{`
+                @keyframes draw-line {
+                    to {
+                        stroke-dashoffset: 0;
+                    }
+                }
+            `}</style>
+        </svg>
+    );
+}
